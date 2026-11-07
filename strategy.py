@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import sys
 import time
 from itertools import combinations
 from pathlib import Path
@@ -50,8 +51,9 @@ DEFAULT_PARAMS = dict(
     pf_limp_eq=0.4,
     bluff_fold_rate=0.75,
     bluff_freq=0.162,
-    time_bank=5.0,
-    call_overhead=0.0005,
+    time_bank=3.5,
+    call_overhead=0.0011,
+    grace=0.001,
     dead_streak=8,
     pool_mult=6.0,
     size_cond=1,
@@ -78,13 +80,20 @@ def soft_step(pct: np.ndarray, q: float, floor: float, width: float) -> np.ndarr
     return floor + (1 - floor) * np.clip((pct - q) / width + 0.5, 0.0, 1.0)
 
 
+def pct_rank(x: np.ndarray) -> np.ndarray:
+    """Within-sample percentile (mid-rank, ties broken by order) using a single sort."""
+    r = np.empty(len(x))
+    r[np.argsort(x, kind="stable")] = np.arange(len(x))
+    return (r + 0.5) / len(x)
+
+
 def made_pct(opp: np.ndarray, board: tuple[int, ...]) -> np.ndarray:
     """Within-sample percentile of each opp hand's current made strength (flop/turn/river)."""
     b = np.array(board)
     pairs = fe.pair_indices(opp)  # (N,10)
     tris = np.array([fe.TRI_IDX[x, y, z] for x, y, z in combinations(b.tolist(), 3)])
     strength = fe.PT[pairs[:, :, None], tris[None, None, :]].reshape(len(opp), -1).max(axis=1)
-    return (strength.argsort().argsort() + 0.5) / len(opp)
+    return pct_rank(strength)
 
 
 # ----------------------------------------------------------------------------- opponent model
@@ -135,6 +144,9 @@ def ingest_history(obs, memory: dict) -> None:
 
 
 def on_hand_end(result, memory: dict) -> None:
+    if result.hand_index == 999:
+        print(f"[huggy] half end: internal think {memory.get('think', 0.0):.2f}s over {memory.get('calls', 0)} "
+              f"decisions, style {memory.get('style')}", file=sys.stderr, flush=True)
     m = memory["opp"]
     opp_folded = not result.went_to_showdown and result.winner == "me"
     if opp_folded:
@@ -157,7 +169,7 @@ def rollout_pct(opp: np.ndarray, board_s: tuple[int, ...], extra: np.ndarray) ->
     full = np.concatenate([np.broadcast_to(np.array(board_s, dtype=np.int64), (len(opp), len(board_s))),
                            extra[:, :k]], axis=1)
     strength = fe.best_scores(fe.pair_indices(opp), fe.triple_indices(full))
-    return (strength.argsort().argsort() + 0.5) / len(opp)
+    return pct_rank(strength)
 
 
 def opp_weights(obs, opp: np.ndarray, extra: np.ndarray, memory: dict, p: dict) -> np.ndarray:
@@ -210,7 +222,7 @@ def equity(obs, memory: dict, p: dict, n: int) -> float:
     need = 5 + (5 - len(board))
     rng = memory["rng"]
     m = max(n, int(n * p["pool_mult"]))
-    perm = unknown[rng.random((m, len(unknown))).argsort(axis=1)]
+    perm = unknown[random_prefix(rng, m, len(unknown), min(len(unknown), need + 5))]
     w = opp_weights(obs, perm[:, :5], perm[:, need:], memory, p)
     if m > n:
         idx = rng.choice(m, size=n, replace=True, p=w / w.sum())
@@ -233,6 +245,25 @@ def legal_raise(obs, prefer: Action) -> Action | None:
         if a in obs.legal_actions:
             return a
     return None
+
+
+_BANK_ROWS, _BANK_K = 50000, 15
+_bank_rng = np.random.default_rng(20261107)
+PREFIX_BANK = {n: _bank_rng.random((_BANK_ROWS, n)).argsort(axis=1)[:, :_BANK_K].astype(np.int8)
+               for n in range(21, 32)}
+
+
+def random_prefix(rng, rows: int, n: int, k: int) -> np.ndarray:
+    """Each row: first k entries of a uniform random permutation of range(n), drawn from a precomputed bank."""
+    bank = PREFIX_BANK.get(n)
+    if bank is None or k > _BANK_K:
+        return rng.random((rows, n)).argsort(axis=1)[:, :k]
+    return bank[rng.integers(0, _BANK_ROWS, rows), :k].astype(np.intp)
+
+
+def charged(elapsed: float, p: dict) -> float:
+    """Judge-style charge for one request: compute + estimated HTTP overhead, minus the 1 ms grace."""
+    return max(0.0, elapsed + p["call_overhead"] - p["grace"])
 
 
 def obs_seed(obs) -> int:
@@ -270,7 +301,8 @@ def decide(obs, memory: dict, p: dict) -> Action:
     if obs.to_call > 0 and obs.street != Street.PREFLOP:
         memory["defense"][0] += 1
         memory["defense"][1] += action == Action.FOLD
-    memory["think"] = used + time.perf_counter() - t0 + p["call_overhead"]
+    memory["think"] = used + charged(time.perf_counter() - t0, p)
+    memory["calls"] = memory.get("calls", 0) + 1
     memory["last_eq"] = eq
     return action
 

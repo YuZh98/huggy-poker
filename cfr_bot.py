@@ -4,6 +4,7 @@ Falls back to the heuristic strategy (strategy.py) on any mismatch or unvisited 
 """
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 import numpy as np
@@ -41,6 +42,15 @@ def make_bot(table: str | Path = Path(__file__).resolve().parent / "tables" / "c
         return memory["style"] != "eq"
 
     def choose_action(obs, memory: dict) -> Action:
+        """Charges the whole decision (CFR path and any heuristic fallback) to memory["think"]."""
+        t0 = time.perf_counter()
+        before = memory.get("think", 0.0)
+        try:
+            return _choose(obs, memory)
+        finally:
+            memory["think"] = before + strategy.charged(time.perf_counter() - t0, hp)
+
+    def _choose(obs, memory: dict) -> Action:
         strategy.ingest_history(obs, memory)
         if use_heuristic(memory):
             memory["cfr_stats"][1] += 1
@@ -57,7 +67,9 @@ def make_bot(table: str | Path = Path(__file__).resolve().parent / "tables" / "c
         ck = (obs.hand_index, s)
         rng = np.random.default_rng(strategy.obs_seed(obs))
         if ck not in memory["cfr_cache"]:
-            memory["cfr_cache"] = {ck: cfr_feat.eq_random(obs.hole_cards, obs.board, rng)}
+            used = memory.get("think", 0.0)
+            n = cfr_feat.POST_SAMPLES if used < hp["time_bank"] else 100 if used < hp["time_bank"] + 1.0 else 30
+            memory["cfr_cache"] = {ck: cfr_feat.eq_random(obs.hole_cards, obs.board, rng, n)}
         b = cfr_feat.bucket(memory["cfr_cache"][ck], thr[s])
         row = strat[node, b]
         legal = [int(a) for a in obs.legal_actions]

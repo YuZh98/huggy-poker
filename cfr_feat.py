@@ -4,7 +4,7 @@ from __future__ import annotations
 import numpy as np
 
 import fasteval as fe
-from strategy import PF_EQ, pf_class
+from strategy import PF_EQ, pf_class, random_prefix
 
 DECK = np.arange(36)
 POST_SAMPLES = 400
@@ -18,7 +18,7 @@ def eq_random(hole, board, rng: np.random.Generator, n: int = POST_SAMPLES) -> f
     board = np.asarray(board, dtype=np.int64)
     unknown = np.setdiff1d(DECK, np.concatenate([hole, board]))
     need = 5 + (5 - len(board))
-    draws = unknown[rng.random((n, len(unknown))).argsort(axis=1)[:, :need]]
+    draws = unknown[random_prefix(rng, n, len(unknown), need)]
     boards = np.concatenate([np.broadcast_to(board, (n, len(board))), draws[:, 5:]], axis=1)
     tri = fe.triple_indices(boards)
     me = fe.best_scores(fe.pair_indices(hole), tri)
