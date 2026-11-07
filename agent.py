@@ -47,7 +47,14 @@ AGENT_NAME = "HuggyBot"
 
 import strategy
 
-_new_half, _choose, _hand_end, _ = strategy.make_bot()
+try:
+    import cfr_bot
+    _CFR_TABLE = cfr_bot.Path(__file__).resolve().parent / "tables" / "cfr.npz"
+    if not _CFR_TABLE.exists():
+        raise FileNotFoundError(_CFR_TABLE)
+    _new_half, _choose, _hand_end, _ = cfr_bot.make_bot(_CFR_TABLE, hybrid="cfr_default", purify=0.15)
+except Exception:
+    _new_half, _choose, _hand_end, _ = strategy.make_bot()
 
 
 def new_half(config: AgentConfig, memory: dict) -> None:

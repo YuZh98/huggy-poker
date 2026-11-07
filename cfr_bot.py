@@ -22,7 +22,9 @@ def make_bot(table: str | Path = Path(__file__).resolve().parent / "tables" / "c
              purify: float = 0.0, hybrid: str | None = None, **heur_overrides):
     """purify: drop actions with probability < purify (>= 0.5 plays the argmax).
     hybrid: None (CFR only), "cfr_default" (heuristic vs passive/aggressive opponents),
-            "heur_default" (CFR vs equity-style opponents)."""
+            "heur_default" (CFR vs equity-style opponents),
+            "evidence" (heuristic by default; CFR once the opponent folds to our bets often AND is not passive —
+                        thresholds chosen on the training pool, see docs/PLAN.md)."""
     data = np.load(table)
     strat = data["strat"].astype(np.float32)
     thr = data["thr"]
@@ -33,9 +35,24 @@ def make_bot(table: str | Path = Path(__file__).resolve().parent / "tables" / "c
         memory["cfr_cache"] = {}
         memory["cfr_stats"] = [0, 0]
 
+    def evidence_route(memory: dict) -> bool:
+        """True = heuristic. Switch to CFR on fold-rate >= hi_fold and raise-rate >= hi_agg; hysteresis on exit."""
+        m = memory["opp"]
+        faced, acts = sum(m["faced"]), sum(m["act"])
+        if faced < hp["route_min_faced"] or acts < hp["style_min_acts"]:
+            return True
+        fold, agg = sum(m["folded"]) / faced, sum(m["agg"]) / acts
+        if memory.get("route_cfr"):
+            memory["route_cfr"] = fold >= hp["route_fold"] - hp["route_hyst"] and agg >= hp["route_agg"] - hp["route_hyst"]
+        else:
+            memory["route_cfr"] = fold >= hp["route_fold"] and agg >= hp["route_agg"]
+        return not memory["route_cfr"]
+
     def use_heuristic(memory: dict) -> bool:
         if hybrid is None:
             return False
+        if hybrid == "evidence":
+            return evidence_route(memory)
         memory["style"] = strategy.classify_style(memory["opp"], memory.get("style"), hp)
         if hybrid == "cfr_default":
             return memory["style"] in ("pass", "aggr")
