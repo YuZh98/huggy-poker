@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+scripts/
+research/
+*.json
+runs/
+CLAUDE.md
