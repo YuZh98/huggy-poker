@@ -47,14 +47,22 @@ AGENT_NAME = "HuggyBot"
 
 import strategy
 
-try:
-    import cfr_bot
-    _CFR_TABLE = cfr_bot.Path(__file__).resolve().parent / "tables" / "cfr.npz"
-    if not _CFR_TABLE.exists():
-        raise FileNotFoundError(_CFR_TABLE)
-    _new_half, _choose, _hand_end, _ = cfr_bot.make_bot(_CFR_TABLE, hybrid="cfr_default", purify=0.15)
-except Exception:
-    _new_half, _choose, _hand_end, _ = strategy.make_bot()
+# Shipped strategy is chosen here explicitly, never by which files exist.
+USE_CFR = False
+CFR_TABLE = "tables/cfr.npz"
+CFR_HYBRID = "cfr_default"
+CFR_PURIFY = 0.15
+
+_new_half, _choose, _hand_end, _ = strategy.make_bot()
+if USE_CFR:
+    try:
+        import cfr_bot
+        _new_half, _choose, _hand_end, _ = cfr_bot.make_bot(
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), CFR_TABLE),
+            hybrid=CFR_HYBRID, purify=CFR_PURIFY)
+    except Exception:
+        traceback.print_exc()
+        _new_half, _choose, _hand_end, _ = strategy.make_bot()
 
 
 def new_half(config: AgentConfig, memory: dict) -> None:
