@@ -36,30 +36,30 @@ DEFAULT_PARAMS = dict(
     prior_n=8.0,
     prior_agg=(0.35, 0.35, 0.35, 0.35),
     prior_fold=0.4,
-    agg_tighten=0.5,
+    agg_tighten=0.537,
     floor=0.03,
-    width=0.146,
-    call_range_scale=0.669,
+    width=0.126,
+    call_range_scale=0.3,
     # policy
-    call_margin=-0.014,
-    raise_edge=0.106,
-    raise_pot_eq=0.596,
-    bet_half_eq=0.535,
+    call_margin=0.029,
+    raise_edge=0.13,
+    raise_pot_eq=0.55,
+    bet_half_eq=0.543,
     bet_pot_eq=0.55,
     pf_open_eq=0.45,
-    pf_open_pot_eq=0.554,
+    pf_open_pot_eq=0.5,
     pf_limp_eq=0.341,
-    bluff_fold_rate=0.496,
-    bluff_freq=0.674,
-    time_bank=3.5,
+    bluff_fold_rate=0.485,
+    bluff_freq=1.0,
+    time_bank=2.5,
     call_overhead=0.0011,
     grace=0.001,
     dead_streak=8,
     pool_mult=6.0,
     size_cond=1,
-    draw_mix=0.0,
-    mdf_slack=0.983,
-    oop_pen=0.007,
+    draw_mix=0.165,
+    mdf_slack=0.944,
+    oop_pen=-0.05,
     style_min_acts=40,
     route_min_faced=60,
     route_fold=0.45,
@@ -68,8 +68,8 @@ DEFAULT_PARAMS = dict(
     style_lo=0.12,
     style_hi=0.50,
     style_hyst=0.05,
-    ip_bonus=0.06,
-    mdf_relax=0.065,
+    ip_bonus=0.12,
+    mdf_relax=0.066,
 )
 
 
@@ -148,7 +148,7 @@ def ingest_history(obs, memory: dict) -> None:
 
 
 def on_hand_end(result, memory: dict) -> None:
-    if result.hand_index == 999:
+    if result.hand_index == memory.get("num_hands", 1000) - 1:
         print(f"[huggy] half end: internal think {memory.get('think', 0.0):.2f}s over {memory.get('calls', 0)} "
               f"decisions, style {memory.get('style')}", file=sys.stderr, flush=True)
     m = memory["opp"]
@@ -281,12 +281,14 @@ def decide(obs, memory: dict, p: dict) -> Action:
     memory["rng"] = np.random.default_rng(obs_seed(obs))
     ingest_history(obs, memory)
     used = memory.get("think", 0.0)
-    pace = p["time_bank"] * (obs.hand_index + 1) / 1000 + 0.5
+    scale = memory.get("bank_scale", 1.0)
+    bank = p["time_bank"] * scale
+    pace = bank * (obs.hand_index + 1) / memory.get("num_hands", 1000) + 0.5 * scale
     if used < pace:
         n = p["samples"]
-    elif used < p["time_bank"]:
+    elif used < bank:
         n = p["samples"] // 4
-    elif used < p["time_bank"] + 1.0:
+    elif used < bank + 1.0 * scale:
         n = 40
     else:
         n = 0
@@ -359,6 +361,16 @@ def policy(obs, eq: float, memory: dict, p: dict) -> Action:
 STYLE_FILE = Path(__file__).resolve().parent / "tables" / "styles.json"
 
 
+def match_settings(config) -> dict:
+    """Time-bank scale and hands per half from the judge's AgentConfig (game.py marks both provisional)."""
+    try:
+        bank = float(getattr(config, "time_bank_seconds", 8.0) or 8.0)
+        hands = int(getattr(config, "num_hands", 1000) or 1000)
+    except (TypeError, ValueError):
+        bank, hands = 8.0, 1000
+    return {"bank_scale": max(0.05, bank / 8.0), "num_hands": max(1, hands)}
+
+
 def classify_style(m: dict, current: str | None, p: dict) -> str | None:
     """Opponent style from overall raise rate, with hysteresis around the thresholds."""
     acts = sum(m["act"])
@@ -388,6 +400,7 @@ def make_bot(styles: dict | None = None, **overrides):
         memory["rng"] = np.random.default_rng()
         memory["think"] = 0.0
         memory["style"] = None
+        memory.update(match_settings(config))
 
     def choose_action(obs, memory: dict) -> Action:
         if style_params:

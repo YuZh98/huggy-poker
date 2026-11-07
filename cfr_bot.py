@@ -85,7 +85,8 @@ def make_bot(table: str | Path = Path(__file__).resolve().parent / "tables" / "c
         rng = np.random.default_rng(strategy.obs_seed(obs))
         if ck not in memory["cfr_cache"]:
             used = memory.get("think", 0.0)
-            n = cfr_feat.POST_SAMPLES if used < hp["time_bank"] else 100 if used < hp["time_bank"] + 1.0 else 30
+            bank = hp["time_bank"] * memory.get("bank_scale", 1.0)
+            n = cfr_feat.POST_SAMPLES if used < bank else 100 if used < bank + memory.get("bank_scale", 1.0) else 30
             memory["cfr_cache"] = {ck: cfr_feat.eq_random(obs.hole_cards, obs.board, rng, n)}
         b = cfr_feat.bucket(memory["cfr_cache"][ck], thr[s])
         row = strat[node, b]
