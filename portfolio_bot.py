@@ -65,7 +65,7 @@ def make_bot(tables: dict, models=None, blueprint=ROOT / "runs" / "cfr50_it200.n
              hybrid: str | None = "stoploss", stop_bb: float = 120.0, stop_hmin: int = 100,
              sel_min_acts: int = 100, sel_lead: float = math.log(20), sel_early: bool = True, sel_tail: bool = True, sel_max_net: float = math.inf, sel_persist: int = 0, sel_lock: bool = False, sel_hmin: int | None = None,
              endgame_hand: int | None = None, endgame_net: float = 0.0, endgame: dict | None = None,
-             early_hmin: int | None = None, early_bb: float = 150.0,
+             early_hmin: int | None = None, early_bb: float = 150.0, cfr_open_hands: int | None = None,
              hard_names: set[str] | None = None, heur=None, **heur_overrides):
     """tables: {name: npz path} response tables sharing the blueprint's bucket thresholds; models: npz with names/P
     (names without a table play the blueprint in CFR mode); hard_names: classes allowed to trigger the early switch
@@ -214,6 +214,8 @@ def make_bot(tables: dict, models=None, blueprint=ROOT / "runs" / "cfr50_it200.n
     def use_heuristic(obs, memory: dict) -> bool:
         if hybrid is None:
             return False
+        if cfr_open_hands is not None and obs.hand_index < cfr_open_hands and not memory["cfr_on"]:
+            return False  # blueprint opening: nothing to read yet, nothing for a repo-reading rival to exploit
         if not memory["cfr_on"] and sel_early and obs.hand_index >= hmin_sel and memory["net_bb"] <= sel_max_net \
                 and hard[leader(memory)] and persistent(obs, memory):
             memory["cfr_on"] = True
