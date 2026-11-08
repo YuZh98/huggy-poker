@@ -36,29 +36,30 @@ DEFAULT_PARAMS = dict(
     prior_n=8.0,
     prior_agg=(0.35, 0.35, 0.35, 0.35),
     prior_fold=0.4,
-    agg_tighten=0.537,
+    agg_tighten=0.5370152272272382,
     floor=0.03,
-    width=0.126,
+    width=0.12632346165268804,
     call_range_scale=0.3,
     # policy
-    call_margin=0.029,
-    raise_edge=0.13,
-    raise_pot_eq=0.55,
-    bet_half_eq=0.543,
+    call_margin=0.028922392615347042,
+    raise_edge=0.13004445690915029,
+    raise_pot_eq=0.5,
+    bet_half_eq=0.5425581957003676,
     bet_pot_eq=0.55,
-    pf_open_eq=0.45,
-    pf_open_pot_eq=0.5,
-    pf_limp_eq=0.341,
-    bluff_fold_rate=0.485,
+    pf_open_eq=0.42,
+    pf_open_pot_eq=0.42,
+    pf_limp_eq=0.3,
+    bluff_fold_rate=0.48501046151467164,
     bluff_freq=1.0,
+    bluff_size_pot=1.0,
     time_bank=3.5,
     call_overhead=0.0011,
     grace=0.001,
     dead_streak=8,
     pool_mult=6.0,
     size_cond=1,
-    draw_mix=0.165,
-    mdf_slack=0.944,
+    draw_mix=0.1650216294475657,
+    mdf_slack=0.9436633931736431,
     oop_pen=-0.05,
     style_min_acts=40,
     route_min_faced=60,
@@ -68,8 +69,12 @@ DEFAULT_PARAMS = dict(
     style_lo=0.12,
     style_hi=0.50,
     style_hyst=0.05,
-    ip_bonus=0.12,
-    mdf_relax=0.066,
+    ip_bonus=0.11999999999999998,
+    mdf_relax=0.06589420259857254,
+    half_q_cap=1.0,
+    mdf_slack_flop=2.0,
+    mdf_slack_turn=2.0,
+    mdf_slack_river=2.0,
 )
 
 
@@ -211,6 +216,8 @@ def opp_weights(obs, opp: np.ndarray, extra: np.ndarray, memory: dict, p: dict) 
         if k:
             rate = pot_rate(m, s, p) if p["size_cond"] and last_pot[s] else agg_rate(m, s, p)
             q = 1 - rate * p["agg_tighten"] ** (k - 1)
+            if s > 0 and not last_pot[s]:
+                q = min(q, p["half_q_cap"])
         else:
             q = fold_rate(m, s, p) * p["call_range_scale"]
         w *= soft_step(pct, q, p["floor"], p["width"])
@@ -307,10 +314,18 @@ def decide(obs, memory: dict, p: dict) -> Action:
     if obs.to_call > 0 and obs.street != Street.PREFLOP:
         memory["defense"][0] += 1
         memory["defense"][1] += action == Action.FOLD
+        cell = memory["defense_ss"].setdefault(defense_key(obs), [0, 0])
+        cell[0] += 1
+        cell[1] += action == Action.FOLD
     memory["think"] = used + charged(time.perf_counter() - t0, p)
     memory["calls"] = memory.get("calls", 0) + 1
     memory["last_eq"] = eq
     return action
+
+
+def defense_key(obs) -> tuple:
+    """(street, size class) of the bet we face: 0 = up to ~half pot, 1 = larger."""
+    return int(obs.street), 0 if obs.to_call <= 0.42 * obs.pot else 1
 
 
 def policy(obs, eq: float, memory: dict, p: dict) -> Action:
@@ -343,6 +358,10 @@ def policy(obs, eq: float, memory: dict, p: dict) -> Action:
             fold_rate_us = (folded + 2.0) / (faced + 6.0)
             if fold_rate_us > c / pot + p["mdf_slack"] and eq >= need - p["mdf_relax"]:
                 return Action.CHECK_CALL
+            faced_s, folded_s = memory["defense_ss"].get(defense_key(obs), (0, 0))
+            slack_s = p[("mdf_slack_flop", "mdf_slack_turn", "mdf_slack_river")[int(obs.street) - 1]]
+            if (folded_s + 2.0) / (faced_s + 6.0) > c / pot + slack_s and eq >= need - p["mdf_relax"]:
+                return Action.CHECK_CALL
         return Action.FOLD
 
     if can_raise:
@@ -352,6 +371,8 @@ def policy(obs, eq: float, memory: dict, p: dict) -> Action:
             return legal_raise(obs, Action.RAISE_HALF)
         s = int(obs.street)
         if s > 0 and fold_rate(memory["opp"], s, p) >= p["bluff_fold_rate"] and rng.random() < p["bluff_freq"]:
+            if p["bluff_size_pot"] > 0 and rng.random() < p["bluff_size_pot"]:
+                return legal_raise(obs, Action.RAISE_POT)
             return legal_raise(obs, Action.RAISE_HALF)
     return Action.CHECK_CALL
 
@@ -397,6 +418,7 @@ def make_bot(styles: dict | None = None, **overrides):
         memory.clear()
         memory["opp"] = new_model()
         memory["defense"] = [0, 0]
+        memory["defense_ss"] = {}
         memory["rng"] = np.random.default_rng()
         memory["think"] = 0.0
         memory["style"] = None
