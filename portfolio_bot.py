@@ -63,12 +63,13 @@ def _load_table(path):
 
 def make_bot(tables: dict, models=None, blueprint=ROOT / "tables" / "cfr.npz", purify: float = 0.15,
              hybrid: str | None = "stoploss", stop_bb: float = 120.0, stop_hmin: int = 100,
-             sel_min_acts: int = 100, sel_lead: float = math.log(20), sel_early: bool = True, sel_tail: bool = True, sel_max_net: float = math.inf,
+             sel_min_acts: int = 100, sel_lead: float = math.log(20), sel_early: bool = True, sel_tail: bool = True, sel_max_net: float = math.inf, sel_persist: int = 0,
              hard_names: set[str] | None = None, heur=None, **heur_overrides):
     """tables: {name: npz path} response tables sharing the blueprint's bucket thresholds; models: npz with names/P
     (names without a table play the blueprint in CFR mode); hard_names: classes allowed to trigger the early switch
     (default: the names that have a table; a leading absorber keeps the heuristic); sel_max_net: the early switch
-    fires only while our net in the half is <= this many bb (chip guard; inf = off); sel_tail: also score the opponent's
+    fires only while our net in the half is <= this many bb (chip guard; inf = off); sel_persist: the same hard
+    class must lead at the current decision and at the last checkpoint sel_persist hands earlier (0 = off); sel_tail: also score the opponent's
     hand-ending action (fold vs call/check), inferred in on_hand_end from our last action and the result."""
     assert hybrid in (None, "stoploss"), hybrid
     assert len(tables) <= MAX_TABLES, "K <= 10 tables"
@@ -121,6 +122,7 @@ def make_bot(tables: dict, models=None, blueprint=ROOT / "tables" / "cfr.npz", p
         memory["cfr_on"] = False
         memory["cfr_switch_hand"] = None
         memory["sel_switch"] = False
+        memory["sel_ck"] = [-1, 0, 0]
         memory["net_bb"] = 0.0
         memory["sel_ll"] = np.zeros(K + 1)
         memory["sel_n"] = 0
@@ -181,13 +183,24 @@ def make_bot(tables: dict, models=None, blueprint=ROOT / "tables" / "cfr.npz", p
                 return 0
         return k
 
+    def persistent(obs, memory: dict) -> bool:
+        """With sel_persist > 0: the leading hard class must also have led at the start of the previous checkpoint
+        (checkpoints every sel_persist hands from stop_hmin), so a transient lead at the action floor cannot fire."""
+        if sel_persist <= 0:
+            return True
+        ck = (obs.hand_index - stop_hmin) // sel_persist
+        rec = memory["sel_ck"]  # [checkpoint index, leader at the previous checkpoint start, leader at this one]
+        if ck != rec[0]:
+            memory["sel_ck"] = rec = [ck, rec[2] if ck == rec[0] + 1 else 0, leader(memory)]
+        return rec[1] != 0 and rec[1] == leader(memory)
+
     # ------------------------------------------------------------------ routing
 
     def use_heuristic(obs, memory: dict) -> bool:
         if hybrid is None:
             return False
         if not memory["cfr_on"] and sel_early and obs.hand_index >= stop_hmin and memory["net_bb"] <= sel_max_net \
-                and hard[leader(memory)]:
+                and hard[leader(memory)] and persistent(obs, memory):
             memory["cfr_on"] = True
             memory["cfr_switch_hand"] = obs.hand_index
             memory["sel_switch"] = True

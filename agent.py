@@ -90,7 +90,7 @@ if USE_CFR:
             _new_half, _choose, _hand_end, _ = portfolio_bot.make_bot(
                 tables={k: os.path.join(_here, v) for k, v in PORTFOLIO.items()},
                 models=os.path.join(_here, SELECTOR), blueprint=os.path.join(_here, CFR_TABLE),
-                purify=CFR_PURIFY, hybrid=CFR_HYBRID, hard_names=HARD_NAMES, **PARAMS)
+                purify=CFR_PURIFY, hybrid=CFR_HYBRID, hard_names=HARD_NAMES, sel_persist=50, **PARAMS)
         else:
             import cfr_bot
             _new_half, _choose, _hand_end, _ = cfr_bot.make_bot(
