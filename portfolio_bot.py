@@ -20,7 +20,7 @@ from pathlib import Path
 
 import numpy as np
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
@@ -61,9 +61,11 @@ def _load_table(path):
     return d["strat"].astype(np.float32), d["thr"], d
 
 
-def make_bot(tables: dict, models=None, blueprint=ROOT / "tables" / "cfr.npz", purify: float = 0.15,
+def make_bot(tables: dict, models=None, blueprint=ROOT / "runs" / "cfr50_it200.npz", purify: float = 0.15,
              hybrid: str | None = "stoploss", stop_bb: float = 120.0, stop_hmin: int = 100,
-             sel_min_acts: int = 100, sel_lead: float = math.log(20), sel_early: bool = True, sel_tail: bool = True, sel_max_net: float = math.inf, sel_persist: int = 0, sel_lock: bool = False,
+             sel_min_acts: int = 100, sel_lead: float = math.log(20), sel_early: bool = True, sel_tail: bool = True, sel_max_net: float = math.inf, sel_persist: int = 0, sel_lock: bool = False, sel_hmin: int | None = None,
+             endgame_hand: int | None = None, endgame_net: float = 0.0, endgame: dict | None = None,
+             early_hmin: int | None = None, early_bb: float = 150.0,
              hard_names: set[str] | None = None, heur=None, **heur_overrides):
     """tables: {name: npz path} response tables sharing the blueprint's bucket thresholds; models: npz with names/P
     (names without a table play the blueprint in CFR mode); hard_names: classes allowed to trigger the early switch
@@ -115,6 +117,15 @@ def make_bot(tables: dict, models=None, blueprint=ROOT / "tables" / "cfr.npz", p
         hard_names = set(tab_index)
     hard = [False] + [n in hard_names and n in tab_index for n in names]
     h_new_half, h_choose, h_hand_end, hp = H.make_bot(styles={}, **heur_overrides)
+    # Variance-aware endgame: when far ahead late in the half, play a tighter parameter set in heuristic mode.
+    # The verdict is on mu/sigma, so once the margin is safe a lower-variance line converts more halves to WIN.
+    e_choose = H.make_bot(styles={}, **{**heur_overrides, **(endgame or {})})[1] if endgame_hand is not None else None
+
+    def heur_choose(obs, memory: dict) -> Action:
+        if e_choose is not None and obs.hand_index >= endgame_hand and memory["net_bb"] >= endgame_net:
+            memory["endgame_n"] = memory.get("endgame_n", 0) + 1
+            return e_choose(obs, memory)
+        return h_choose(obs, memory)
 
     def new_half(config, memory: dict) -> None:
         h_new_half(config, memory)
@@ -185,12 +196,14 @@ def make_bot(tables: dict, models=None, blueprint=ROOT / "tables" / "cfr.npz", p
                 return 0
         return k
 
+    hmin_sel = stop_hmin if sel_hmin is None else sel_hmin
+
     def persistent(obs, memory: dict) -> bool:
         """With sel_persist > 0: the leading hard class must also have led at the start of the previous checkpoint
         (checkpoints every sel_persist hands from stop_hmin), so a transient lead at the action floor cannot fire."""
         if sel_persist <= 0:
             return True
-        ck = (obs.hand_index - stop_hmin) // sel_persist
+        ck = (obs.hand_index - hmin_sel) // sel_persist
         rec = memory["sel_ck"]  # [checkpoint index, leader at the previous checkpoint start, leader at this one]
         if ck != rec[0]:
             memory["sel_ck"] = rec = [ck, rec[2] if ck == rec[0] + 1 else 0, leader(memory)]
@@ -201,7 +214,7 @@ def make_bot(tables: dict, models=None, blueprint=ROOT / "tables" / "cfr.npz", p
     def use_heuristic(obs, memory: dict) -> bool:
         if hybrid is None:
             return False
-        if not memory["cfr_on"] and sel_early and obs.hand_index >= stop_hmin and memory["net_bb"] <= sel_max_net \
+        if not memory["cfr_on"] and sel_early and obs.hand_index >= hmin_sel and memory["net_bb"] <= sel_max_net \
                 and hard[leader(memory)] and persistent(obs, memory):
             memory["cfr_on"] = True
             memory["cfr_switch_hand"] = obs.hand_index
@@ -228,7 +241,7 @@ def make_bot(tables: dict, models=None, blueprint=ROOT / "tables" / "cfr.npz", p
         sel_ingest(obs, memory, key)
         if use_heuristic(obs, memory):
             memory["cfr_stats"][1] += 1
-            return h_choose(obs, memory)
+            return heur_choose(obs, memory)
         if obs.legal_actions and Action.RAISE_HALF in obs.legal_actions \
                 and memory["opp"]["streak"] >= hp["dead_streak"]:
             return Action.RAISE_HALF
@@ -236,7 +249,7 @@ def make_bot(tables: dict, models=None, blueprint=ROOT / "tables" / "cfr.npz", p
         me = 0 if obs.is_button else 1
         if node is None or TREE.player[node] != me:
             memory["cfr_stats"][1] += 1
-            return h_choose(obs, memory)
+            return heur_choose(obs, memory)
         lead = memory["sel_lock"] if sel_lock and memory["sel_lock"] else leader(memory)
         ti = tab_of[lead]
         memory["sel_table_uses"] += ti != 0
@@ -264,7 +277,7 @@ def make_bot(tables: dict, models=None, blueprint=ROOT / "tables" / "cfr.npz", p
             w = kept if kept.sum() > 0 else (w == w.max()).astype(np.float64)
         if w.sum() <= 0:
             memory["cfr_stats"][1] += 1
-            return h_choose(obs, memory)
+            return heur_choose(obs, memory)
         memory["cfr_stats"][0] += 1
         a = legal[int(rng.choice(len(legal), p=w / w.sum()))]
         if a in (Action.RAISE_HALF, Action.RAISE_POT):
@@ -277,7 +290,8 @@ def make_bot(tables: dict, models=None, blueprint=ROOT / "tables" / "cfr.npz", p
             sel_tail_ingest(result, memory)
         memory["net_bb"] += result.my_net / BIG_BLIND
         h = result.hand_index + 1
-        if hybrid == "stoploss" and not memory["cfr_on"] and h >= stop_hmin and memory["net_bb"] <= -stop_bb:
+        early = early_hmin is not None and h >= early_hmin and memory["net_bb"] <= -early_bb
+        if hybrid == "stoploss" and not memory["cfr_on"] and ((h >= stop_hmin and memory["net_bb"] <= -stop_bb) or early):
             memory["cfr_on"] = True
             memory["cfr_switch_hand"] = h
             if sel_lock:
