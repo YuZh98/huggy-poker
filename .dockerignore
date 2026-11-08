@@ -7,4 +7,3 @@ research/
 *.json
 runs/
 CLAUDE.md
-!tables/*.json

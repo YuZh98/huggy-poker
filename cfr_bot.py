@@ -20,9 +20,10 @@ ACTS = (Action.FOLD, Action.CHECK_CALL, Action.RAISE_HALF, Action.RAISE_POT)
 
 
 def make_bot(table: str | Path = Path(__file__).resolve().parent / "tables" / "cfr.npz",
-             purify: float = 0.0, hybrid: str | None = None, stop_bb: float = 120.0, stop_hmin: int = 100,
+             purify: float = 0.0, hybrid: str | None = None, stop_bb: float = 120.0, stop_hmin: int = 100, stop_k: float = 0.0, heur=None,
              **heur_overrides):
     """purify: drop actions with probability < purify (>= 0.5 plays the argmax).
+    heur: heuristic module (default strategy.py); it must provide make_bot, classify_style, charged, ingest_history, obs_seed.
     hybrid: None (CFR only), "cfr_default" (heuristic vs passive/aggressive opponents),
             "heur_default" (CFR vs equity-style opponents),
             "evidence" (heuristic by default; CFR once the opponent folds to our bets often AND is not passive —
@@ -31,7 +32,9 @@ def make_bot(table: str | Path = Path(__file__).resolve().parent / "tables" / "c
                        the half if the opponent's check-raise rate >= 0.09 over >= 100 opportunities AND its raise
                        rate >= 0.30 — the signature of equilibrium-type opponents; never switches back),
             "stoploss" (heuristic by default; switch to CFR for the rest of the half once our cumulative net in this
-                        half is <= -stop_bb big blinds at hand >= stop_hmin; never switches back)."""
+                        half is <= -stop_bb big blinds at hand >= stop_hmin; never switches back; with stop_k > 0 the
+                        threshold is instead -stop_k * sd * sqrt(h), sd = running per-hand SD of our net)."""
+    H = heur or strategy
     data = np.load(table)
     strat = data["strat"].astype(np.float32)
     thr = data["thr"]
@@ -40,7 +43,7 @@ def make_bot(table: str | Path = Path(__file__).resolve().parent / "tables" / "c
         lay = data["layout"]
         thr_e = [thr[s, : lay[s, 0] - 1] for s in range(4)]
         thr_v = [data["thr_var"][s, : max(0, lay[s, 1] - 1)] for s in range(4)]
-    h_new_half, h_choose, h_hand_end, hp = strategy.make_bot(styles={}, **heur_overrides)
+    h_new_half, h_choose, h_hand_end, hp = H.make_bot(styles={}, **heur_overrides)
 
     def new_half(config, memory: dict) -> None:
         h_new_half(config, memory)
@@ -51,6 +54,7 @@ def make_bot(table: str | Path = Path(__file__).resolve().parent / "tables" / "c
         memory["cfr_switch_hand"] = None
         memory["next_check"] = 400
         memory["net_bb"] = 0.0
+        memory["net_sq"] = 0.0
 
     def track_check_raise(obs, memory: dict) -> None:
         """Opportunity = we bet/raised on a street where the opponent had checked; resolved by its next action there."""
@@ -102,7 +106,7 @@ def make_bot(table: str | Path = Path(__file__).resolve().parent / "tables" / "c
             return not memory["cfr_on"]
         if hybrid == "evidence":
             return evidence_route(memory)
-        memory["style"] = strategy.classify_style(memory["opp"], memory.get("style"), hp)
+        memory["style"] = H.classify_style(memory["opp"], memory.get("style"), hp)
         if hybrid == "cfr_default":
             return memory["style"] in ("pass", "aggr")
         return memory["style"] != "eq"
@@ -118,10 +122,10 @@ def make_bot(table: str | Path = Path(__file__).resolve().parent / "tables" / "c
                 memory["xr"]["pending"] = int(obs.street)
             return action
         finally:
-            memory["think"] = before + strategy.charged(time.perf_counter() - t0, hp)
+            memory["think"] = before + H.charged(time.perf_counter() - t0, hp)
 
     def _choose(obs, memory: dict) -> Action:
-        strategy.ingest_history(obs, memory)
+        H.ingest_history(obs, memory)
         if hybrid == "delayed":
             track_check_raise(obs, memory)
             maybe_switch(obs, memory)
@@ -138,7 +142,7 @@ def make_bot(table: str | Path = Path(__file__).resolve().parent / "tables" / "c
             return h_choose(obs, memory)
         s = int(obs.street)
         ck = (obs.hand_index, s)
-        rng = np.random.default_rng(strategy.obs_seed(obs))
+        rng = np.random.default_rng(H.obs_seed(obs))
         if ck not in memory["cfr_cache"]:
             used = memory.get("think", 0.0)
             bank = hp["time_bank"] * memory.get("bank_scale", 1.0)
@@ -169,8 +173,16 @@ def make_bot(table: str | Path = Path(__file__).resolve().parent / "tables" / "c
     def on_hand_end(result, memory: dict) -> None:
         h_hand_end(result, memory)
         if hybrid == "stoploss":
-            memory["net_bb"] += result.my_net / BIG_BLIND
-            if not memory["cfr_on"] and result.hand_index + 1 >= stop_hmin and memory["net_bb"] <= -stop_bb:
+            x = result.my_net / BIG_BLIND
+            memory["net_bb"] += x
+            memory["net_sq"] += x * x
+            h = result.hand_index + 1
+            if stop_k > 0:
+                sd = max(0.0, memory["net_sq"] / h - (memory["net_bb"] / h) ** 2) ** 0.5
+                limit = stop_k * sd * h ** 0.5
+            else:
+                limit = stop_bb
+            if not memory["cfr_on"] and h >= stop_hmin and memory["net_bb"] <= -limit:
                 memory["cfr_on"] = True
                 memory["cfr_switch_hand"] = result.hand_index + 1
             if result.hand_index == memory.get("num_hands", 1000) - 1:

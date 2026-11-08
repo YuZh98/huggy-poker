@@ -52,17 +52,52 @@ USE_CFR = True
 CFR_TABLE = "tables/cfr.npz"
 CFR_HYBRID = "stoploss"
 CFR_PURIFY = 0.15
+# Portfolio (release 7A): the selector identifies hard-type opponents online and switches to the CFR table early;
+# every hard class plays the blueprint. Empty dict = release-5 behaviour.
+PORTFOLIO = {"byte_me": "tables/cfr.npz", "adaptive": "tables/cfr.npz", "learner_a": "tables/cfr.npz"}
+SELECTOR = "tables/selector.npz"
+HARD_NAMES = {"byte_me", "adaptive", "learner_a"}
+# Heuristic parameters are pinned here (final_r2_75_tb35), not taken from strategy.DEFAULT_PARAMS.
+PARAMS = {
+    'call_margin': 0.028922392615347042,
+    'raise_edge': 0.13004445690915029,
+    'raise_pot_eq': 0.55,
+    'bet_half_eq': 0.5425581957003676,
+    'bet_pot_eq': 0.55,
+    'pf_open_eq': 0.45,
+    'pf_open_pot_eq': 0.5,
+    'pf_limp_eq': 0.3405498670136925,
+    'bluff_fold_rate': 0.48501046151467164,
+    'bluff_freq': 1.0,
+    'agg_tighten': 0.5370152272272382,
+    'floor': 0.03,
+    'width': 0.12632346165268804,
+    'call_range_scale': 0.3,
+    'draw_mix': 0.1650216294475657,
+    'mdf_slack': 0.9436633931736431,
+    'oop_pen': -0.05,
+    'ip_bonus': 0.11999999999999998,
+    'mdf_relax': 0.06589420259857254,
+    'time_bank': 3.5,
+}
 
-_new_half, _choose, _hand_end, _ = strategy.make_bot()
+_new_half, _choose, _hand_end, _ = strategy.make_bot(**PARAMS)
 if USE_CFR:
     try:
-        import cfr_bot
-        _new_half, _choose, _hand_end, _ = cfr_bot.make_bot(
-            os.path.join(os.path.dirname(os.path.abspath(__file__)), CFR_TABLE),
-            hybrid=CFR_HYBRID, purify=CFR_PURIFY)
+        _here = os.path.dirname(os.path.abspath(__file__))
+        if PORTFOLIO:
+            import portfolio_bot
+            _new_half, _choose, _hand_end, _ = portfolio_bot.make_bot(
+                tables={k: os.path.join(_here, v) for k, v in PORTFOLIO.items()},
+                models=os.path.join(_here, SELECTOR), blueprint=os.path.join(_here, CFR_TABLE),
+                purify=CFR_PURIFY, hybrid=CFR_HYBRID, hard_names=HARD_NAMES, **PARAMS)
+        else:
+            import cfr_bot
+            _new_half, _choose, _hand_end, _ = cfr_bot.make_bot(
+                os.path.join(_here, CFR_TABLE), hybrid=CFR_HYBRID, purify=CFR_PURIFY, **PARAMS)
     except Exception:
         traceback.print_exc()
-        _new_half, _choose, _hand_end, _ = strategy.make_bot()
+        _new_half, _choose, _hand_end, _ = strategy.make_bot(**PARAMS)
 
 
 def new_half(config: AgentConfig, memory: dict) -> None:
