@@ -48,9 +48,9 @@ AGENT_NAME = "HuggyBot"
 import strategy
 
 # Shipped strategy is chosen here explicitly, never by which files exist.
-USE_CFR = False
+USE_CFR = True
 CFR_TABLE = "tables/cfr.npz"
-CFR_HYBRID = "cfr_default"
+CFR_HYBRID = "stoploss"
 CFR_PURIFY = 0.15
 
 _new_half, _choose, _hand_end, _ = strategy.make_bot()
