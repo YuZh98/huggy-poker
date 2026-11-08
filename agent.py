@@ -54,9 +54,10 @@ CFR_HYBRID = "stoploss"
 CFR_PURIFY = 0.15
 # Portfolio (release 7A): the selector identifies hard-type opponents online and switches to the CFR table early;
 # every hard class plays the blueprint. Empty dict = release-5 behaviour.
-PORTFOLIO = {"byte_me": "tables/cfr.npz", "adaptive": "tables/cfr.npz", "learner_a": "tables/cfr.npz"}
+PORTFOLIO = {"byte_me": "tables/cfr.npz", "adaptive": "tables/cfr.npz", "learner_a": "tables/cfr.npz",
+             "quad_j": "tables/rnr_quadj.npz"}
 SELECTOR = "tables/selector.npz"
-HARD_NAMES = {"byte_me", "adaptive", "learner_a"}
+HARD_NAMES = {"byte_me", "adaptive", "learner_a", "quad_j"}
 # Heuristic parameters are pinned here (final_r2_75_tb35), not taken from strategy.DEFAULT_PARAMS.
 PARAMS = {
     'call_margin': 0.028922392615347042,
@@ -90,7 +91,7 @@ if USE_CFR:
             _new_half, _choose, _hand_end, _ = portfolio_bot.make_bot(
                 tables={k: os.path.join(_here, v) for k, v in PORTFOLIO.items()},
                 models=os.path.join(_here, SELECTOR), blueprint=os.path.join(_here, CFR_TABLE),
-                purify=CFR_PURIFY, hybrid=CFR_HYBRID, hard_names=HARD_NAMES, sel_persist=50, **PARAMS)
+                purify=CFR_PURIFY, hybrid=CFR_HYBRID, hard_names=HARD_NAMES, sel_lock=True, **PARAMS)
         else:
             import cfr_bot
             _new_half, _choose, _hand_end, _ = cfr_bot.make_bot(

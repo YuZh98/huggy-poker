@@ -63,13 +63,14 @@ def _load_table(path):
 
 def make_bot(tables: dict, models=None, blueprint=ROOT / "tables" / "cfr.npz", purify: float = 0.15,
              hybrid: str | None = "stoploss", stop_bb: float = 120.0, stop_hmin: int = 100,
-             sel_min_acts: int = 100, sel_lead: float = math.log(20), sel_early: bool = True, sel_tail: bool = True, sel_max_net: float = math.inf, sel_persist: int = 0,
+             sel_min_acts: int = 100, sel_lead: float = math.log(20), sel_early: bool = True, sel_tail: bool = True, sel_max_net: float = math.inf, sel_persist: int = 0, sel_lock: bool = False,
              hard_names: set[str] | None = None, heur=None, **heur_overrides):
     """tables: {name: npz path} response tables sharing the blueprint's bucket thresholds; models: npz with names/P
     (names without a table play the blueprint in CFR mode); hard_names: classes allowed to trigger the early switch
     (default: the names that have a table; a leading absorber keeps the heuristic); sel_max_net: the early switch
     fires only while our net in the half is <= this many bb (chip guard; inf = off); sel_persist: the same hard
-    class must lead at the current decision and at the last checkpoint sel_persist hands earlier (0 = off); sel_tail: also score the opponent's
+    class must lead at the current decision and at the last checkpoint sel_persist hands earlier (0 = off); sel_lock: once
+    CFR mode starts with a leading class that has a table, keep that table for the rest of the half; sel_tail: also score the opponent's
     hand-ending action (fold vs call/check), inferred in on_hand_end from our last action and the result."""
     assert hybrid in (None, "stoploss"), hybrid
     assert len(tables) <= MAX_TABLES, "K <= 10 tables"
@@ -123,6 +124,7 @@ def make_bot(tables: dict, models=None, blueprint=ROOT / "tables" / "cfr.npz", p
         memory["cfr_switch_hand"] = None
         memory["sel_switch"] = False
         memory["sel_ck"] = [-1, 0, 0]
+        memory["sel_lock"] = 0
         memory["net_bb"] = 0.0
         memory["sel_ll"] = np.zeros(K + 1)
         memory["sel_n"] = 0
@@ -204,6 +206,8 @@ def make_bot(tables: dict, models=None, blueprint=ROOT / "tables" / "cfr.npz", p
             memory["cfr_on"] = True
             memory["cfr_switch_hand"] = obs.hand_index
             memory["sel_switch"] = True
+            if sel_lock:
+                memory["sel_lock"] = leader(memory)
         return not memory["cfr_on"]
 
     def choose_action(obs, memory: dict) -> Action:
@@ -233,7 +237,7 @@ def make_bot(tables: dict, models=None, blueprint=ROOT / "tables" / "cfr.npz", p
         if node is None or TREE.player[node] != me:
             memory["cfr_stats"][1] += 1
             return h_choose(obs, memory)
-        lead = leader(memory)
+        lead = memory["sel_lock"] if sel_lock and memory["sel_lock"] else leader(memory)
         ti = tab_of[lead]
         memory["sel_table_uses"] += ti != 0
         strat = strats[ti]
@@ -276,6 +280,8 @@ def make_bot(tables: dict, models=None, blueprint=ROOT / "tables" / "cfr.npz", p
         if hybrid == "stoploss" and not memory["cfr_on"] and h >= stop_hmin and memory["net_bb"] <= -stop_bb:
             memory["cfr_on"] = True
             memory["cfr_switch_hand"] = h
+            if sel_lock:
+                memory["sel_lock"] = leader(memory)
         if result.hand_index == memory.get("num_hands", 1000) - 1:
             ll = memory["sel_ll"]
             k = leader(memory)
